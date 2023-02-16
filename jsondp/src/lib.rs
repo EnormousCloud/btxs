@@ -2,6 +2,7 @@ use anyhow::{bail, Context};
 use serde_json::{Map, Number, Value};
 use std::io::{BufWriter, Read, Write};
 
+pub mod blockchain;
 pub mod decode;
 pub mod dictionary;
 pub mod encode;

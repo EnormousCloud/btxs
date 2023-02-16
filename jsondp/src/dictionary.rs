@@ -45,12 +45,13 @@ impl MapDictionary {
     }
 
     // protected: insert new element to the map
-    fn insert(&mut self, item: &str) {
+    pub fn insert(&mut self, item: &str) {
         let index = (1 + self.v.len()) as u32;
         self.insert_as(item, index);
     }
+
     // insert with known index
-    fn insert_as(&mut self, item: &str, index: u32) {
+    pub fn insert_as(&mut self, item: &str, index: u32) {
         self.v.insert(index, item.to_string());
         self.k.insert(item.to_string(), index);
     }
@@ -133,8 +134,25 @@ impl DictionaryRead for MapDictionary {
 mod tests {
 
     use super::*;
+    use serde_json::Value;
+    use std::env;
+    use std::fs::File;
     use std::io::{BufReader, BufWriter};
     use std::str::FromStr;
+
+    #[test]
+    pub fn it_learns_from_file() {
+        if let Ok(path) = env::var("JSONDP_TRAINING_JSON") {
+            if let Ok(file) = File::open(&path) {
+                let reader = BufReader::new(file);
+                // Read the JSON contents of the file as an instance of `User`.
+                let v = serde_json::from_reader(reader).unwrap();
+                let mut dict = MapDictionary::new();
+                dict.learn(&v);
+                println!("{:?}", dict.k);
+            }
+        }
+    }
 
     #[test]
     pub fn it_learns() {
