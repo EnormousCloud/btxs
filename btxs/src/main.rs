@@ -81,14 +81,15 @@ mod kv {
     impl super::KV for PostgresKV {
         #[instrument(level = "TRACE")]
         async fn get(&self, n: u32) -> anyhow::Result<Option<Vec<u8>>> {
-            let sql = format!("SELECT v FROM {} WHERE k=$1", self.table_name);
-            let rows = sqlx::query(&sql).bind(n as i32).fetch_all(&self.db).await?;
-            if rows.len() > 0 {
-                let row = rows.get(0).unwrap();
-                let data = row.get::<Vec<u8>, _>("v");
-                return Ok(Some(data));
-            }
-            Ok(None)
+            let sql = format!("SELECT v FROM {} WHERE k=$1 LIMIT 1", self.table_name);
+            let rows = sqlx::query(&sql)
+                .bind(n as i32)
+                .fetch_optional(&self.db)
+                .await?;
+            Ok(match rows {
+                Some(row) => Some(row.get::<Vec<u8>, _>("v")),
+                None => None,
+            })
         }
 
         #[instrument(level = "TRACE")]
