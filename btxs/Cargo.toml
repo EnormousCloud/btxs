@@ -7,13 +7,11 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.68"
-async-trait = "0.1.63"
 atty = "0.2.14"
 clap = { version = "4.1.4", features = ["derive", "env"] }
 color-eyre = "0.6.2"
-ethers = { version = "1.0.2", features = ["rustls"] }
 jsondp = { path = "../jsondp" }
-sqlx = { version = "0.6.2", features = ["postgres", "runtime-tokio-rustls"] }
+kv = { path = "../kv" }
 tokio = { version = "1.24.2", features = ["full"] }
 tracing = "0.1.37"
 tracing-error = "0.2.0"
