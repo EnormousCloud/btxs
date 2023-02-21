@@ -3,5 +3,6 @@
 members = [
     "btxs",
     "kv",
+    "eth-logs",
     "jsondp",
 ]

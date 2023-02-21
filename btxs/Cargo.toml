@@ -12,6 +12,7 @@ clap = { version = "4.1.4", features = ["derive", "env"] }
 color-eyre = "0.6.2"
 jsondp = { path = "../jsondp" }
 kv = { path = "../kv" }
+eth-logs = { path = "../eth-logs" }
 tokio = { version = "1.24.2", features = ["full"] }
 tracing = "0.1.37"
 tracing-error = "0.2.0"
