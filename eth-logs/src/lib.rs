@@ -2,12 +2,13 @@ mod error;
 mod param;
 
 use crate::error::Error;
-use ethers::types::H256;
+use ethers::types::{Address, BlockNumber, Filter, Topic, H256};
 use param::Params;
 use serde::Serialize;
 use std::time::Duration;
 use tracing::*;
 
+/// request to be passed to JSON-RPC as a part of the batch
 #[derive(Debug, Clone, Serialize)]
 pub struct RpcSingleRequest {
     pub jsonrpc: String,
@@ -16,6 +17,7 @@ pub struct RpcSingleRequest {
     pub params: Params,
 }
 
+/// request to retrieve block by hash
 pub fn get_block(hash: H256) -> RpcSingleRequest {
     let tx = serde_json::Value::String(format!("{:?}", &hash));
     RpcSingleRequest {
@@ -26,6 +28,7 @@ pub fn get_block(hash: H256) -> RpcSingleRequest {
     }
 }
 
+/// request to retrieve transaction by hash
 pub fn get_transaction(hash: H256) -> RpcSingleRequest {
     let tx = serde_json::Value::String(format!("{:?}", &hash));
     RpcSingleRequest {
@@ -36,6 +39,7 @@ pub fn get_transaction(hash: H256) -> RpcSingleRequest {
     }
 }
 
+/// request to retrieve transaction receipt by hash
 pub fn get_receipt(hash: H256) -> RpcSingleRequest {
     let tx = serde_json::Value::String(format!("{:?}", &hash));
     RpcSingleRequest {
@@ -46,7 +50,45 @@ pub fn get_receipt(hash: H256) -> RpcSingleRequest {
     }
 }
 
-#[derive(Debug, Clone)]
+/// request to retrieve logs from smart contract
+pub fn get_logs(
+    addresses: Vec<Address>,
+    from_block: Option<BlockNumber>,
+    to: Option<BlockNumber>,
+    topic0: Option<Topic>,
+    topic1: Option<Topic>,
+    topic2: Option<Topic>,
+    topic3: Option<Topic>,
+) -> RpcSingleRequest {
+    let mut filter = Filter::new().address(addresses);
+    if let Some(from) = &from_block {
+        filter = filter.from_block(from.clone());
+    }
+    if let Some(to) = &to {
+        filter = filter.to_block(to.clone());
+    }
+    if let Some(topic0) = &topic0 {
+        filter = filter.topic0(topic0.clone());
+    }
+    if let Some(topic1) = &topic1 {
+        filter = filter.topic1(topic1.clone());
+    }
+    if let Some(topic2) = &topic2 {
+        filter = filter.topic2(topic2.clone());
+    }
+    if let Some(topic3) = &topic3 {
+        filter = filter.topic3(topic3.clone());
+    }
+    let filter_json = serde_json::to_value(&filter).unwrap();
+    RpcSingleRequest {
+        jsonrpc: "2.0".to_string(),
+        id: "l".to_string(),
+        method: "eth_getLogs".to_string(),
+        params: Params::Array(vec![filter_json]),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RpcBatchResponse(Vec<serde_json::Value>);
 
 impl RpcBatchResponse {
@@ -109,8 +151,34 @@ impl EthBatchClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethers::types::H256;
     use std::env;
     use std::str::FromStr;
+
+    #[test]
+    #[ignore]
+    fn it_reads_logs() {
+        let rpc_addr = env::var("RPC_ETH_ADDR").unwrap();
+        let addresses =
+            vec![Address::from_str("0b38210ea11411557c13457d4da7dc6ea731b88a").unwrap()];
+        let topic =
+            H256::from_str("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+                .unwrap()
+                .into();
+        let rq = vec![get_logs(
+            addresses,
+            None,
+            None,
+            Some(topic),
+            None,
+            None,
+            None,
+        )];
+        println!("{}", serde_json::to_string(&rq).unwrap());
+        let response = EthBatchClient::new(&rpc_addr).get(rq).unwrap();
+        println!("{}", serde_json::to_string_pretty(&response).unwrap());
+        response.value("l").unwrap();
+    }
 
     #[test]
     #[ignore]
