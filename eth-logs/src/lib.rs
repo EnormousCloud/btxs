@@ -3,7 +3,7 @@ mod param;
 
 use crate::error::{Error, ErrorContainer};
 use anyhow::{bail, Context};
-use ethers::types::{Address, BlockNumber, Filter, Topic, H256};
+use ethers::types::{Address, BlockNumber, Filter, Log, Topic, H256};
 use param::Params;
 use serde::Serialize;
 use serde_json::Value;
@@ -207,6 +207,71 @@ impl EthBatchClient {
             _ => bail!("latest block is neither number or string"),
         };
         Ok((chain_id, block_id))
+    }
+}
+
+pub struct EthLogsStream {
+    client: EthBatchClient,
+    latest_event_block: u64,
+    latest_block: u64,
+    batch_size: u64,
+    min_block: u64,
+    addresses: Vec<Address>,
+    topic0: Option<Topic>,
+    topic1: Option<Topic>,
+    topic2: Option<Topic>,
+    topic3: Option<Topic>,
+}
+
+impl EthLogsStream {
+    // create stream
+    pub fn new(
+        client: EthBatchClient,
+        min_block: u64,
+        batch_size: u64,
+        addresses: Vec<Address>,
+        topic0: Option<Topic>,
+        topic1: Option<Topic>,
+        topic2: Option<Topic>,
+        topic3: Option<Topic>,
+    ) -> anyhow::Result<Self> {
+        let (_, latest_block) = client.connect()?;
+        Ok(Self {
+            client,
+            latest_event_block: min_block - 1,
+            latest_block,
+            min_block,
+            batch_size,
+            addresses,
+            topic0,
+            topic1,
+            topic2,
+            topic3,
+        })
+    }
+
+    pub fn next(&self) -> anyhow::Result<Option<bool>> {
+        let mut current_block = self.latest_event_block;
+        while current_block < self.latest_block {
+            let to_block = std::cmp::min(current_block + self.batch_size, self.latest_block);
+            // 1st request download the logs
+            let requests = vec![get_logs(
+                self.addresses.clone(),
+                Some(current_block.into()),
+                Some(to_block.into()),
+                self.topic0.clone(),
+                self.topic1.clone(),
+                self.topic2.clone(),
+                self.topic3.clone(),
+            )];
+            println!("request: {:?}", requests);
+            let response = self.client.get(requests)?;
+            let logs: Vec<Log> = serde_json::from_value(response.value("logs")?)?;
+            // build block batches from logs
+            // 2nds request:: get transactions and receipts, block by block
+            current_block = to_block;
+        }
+        Ok(None)
     }
 }
 
