@@ -1,10 +1,12 @@
 mod error;
 mod param;
 
-use crate::error::Error;
+use crate::error::{Error, ErrorContainer};
+use anyhow::{bail, Context};
 use ethers::types::{Address, BlockNumber, Filter, Topic, H256};
 use param::Params;
 use serde::Serialize;
+use serde_json::Value;
 use std::time::Duration;
 use tracing::*;
 
@@ -15,6 +17,26 @@ pub struct RpcSingleRequest {
     pub id: String,
     pub method: String,
     pub params: Params,
+}
+
+/// request to retrieve latest block number
+pub fn get_latest() -> RpcSingleRequest {
+    RpcSingleRequest {
+        jsonrpc: "2.0".to_string(),
+        id: "latest".to_string(),
+        method: "eth_blockNumber".to_string(),
+        params: Params::Array(vec![]),
+    }
+}
+
+/// request to rerieve chain id from network_version
+pub fn get_net_version() -> RpcSingleRequest {
+    RpcSingleRequest {
+        jsonrpc: "2.0".to_string(),
+        id: "net".to_string(),
+        method: "net_version".to_string(),
+        params: Params::Array(vec![]),
+    }
 }
 
 /// request to retrieve block by hash
@@ -54,7 +76,7 @@ pub fn get_receipt(hash: H256) -> RpcSingleRequest {
 pub fn get_logs(
     addresses: Vec<Address>,
     from_block: Option<BlockNumber>,
-    to: Option<BlockNumber>,
+    to_block: Option<BlockNumber>,
     topic0: Option<Topic>,
     topic1: Option<Topic>,
     topic2: Option<Topic>,
@@ -64,7 +86,7 @@ pub fn get_logs(
     if let Some(from) = &from_block {
         filter = filter.from_block(from.clone());
     }
-    if let Some(to) = &to {
+    if let Some(to) = &to_block {
         filter = filter.to_block(to.clone());
     }
     if let Some(topic0) = &topic0 {
@@ -92,20 +114,23 @@ pub fn get_logs(
 pub struct RpcBatchResponse(Vec<serde_json::Value>);
 
 impl RpcBatchResponse {
-    pub fn value(&self, id: &str) -> Result<serde_json::Value, Error> {
+    pub fn value(&self, id: &str) -> Result<Value, Error> {
         let found = self
             .0
             .iter()
-            .find(|v| v["id"] == serde_json::Value::String(id.to_string()));
+            .find(|v| v["id"] == Value::String(id.to_string()));
         match found {
             Some(v) => {
                 let out = match v.get("result") {
                     Some(v) => v.clone(),
                     None => {
-                        let e = v.get("error").unwrap();
-                        let s = serde_json::to_string(e).unwrap();
-                        let err: Error = serde_json::from_str(&s).unwrap();
-                        return Err(err);
+                        if let Some(e) = v.get("error") {
+                            let err: Error = serde_json::from_value(e.clone()).unwrap();
+                            return Err(err);
+                        } else {
+                            println!("no error, no result");
+                            return Err(Error::not_found());
+                        }
                     }
                 };
                 Ok(out)
@@ -143,8 +168,45 @@ impl EthBatchClient {
         let body = serde_json::to_string(&requests)?;
         let response = req.send_string(&body)?;
         let response_str = response.into_string()?;
+        // check if the response is just a single error
+        if let Ok(err) = serde_json::from_str::<ErrorContainer>(&response_str) {
+            return Err(err.error.into());
+        }
         let out: Vec<serde_json::Value> = serde_json::from_str(&response_str)?;
         Ok(RpcBatchResponse(out))
+    }
+
+    /// try out connection to RPC and return chain id and latest block number if successful
+    #[instrument(skip(self), level = "debug")]
+    pub fn connect(&self) -> anyhow::Result<(u64, u64)> {
+        let our = self.get(vec![get_net_version(), get_latest()])?;
+        let chain_id = match our.value("net")? {
+            Value::Number(n) => n.as_u64().context("failed to parse chain_id as number")?,
+            Value::String(s) => {
+                if s.starts_with("0x") {
+                    u64::from_str_radix(&s[2..], 16).context("failed to parse chain_id as hex")?
+                } else {
+                    s.parse().context("failed to parse chain_id as decimal")?
+                }
+            }
+            _ => bail!("net_version is neither number or string"),
+        };
+        let block_id = match our.value("latest")? {
+            Value::Number(n) => n
+                .as_u64()
+                .context("failed to parse latest block as number")?,
+            Value::String(s) => {
+                if s.starts_with("0x") {
+                    u64::from_str_radix(&s[2..], 16)
+                        .context("failed to parse latest block as hex")?
+                } else {
+                    s.parse()
+                        .context("failed to parse latest block as decimal")?
+                }
+            }
+            _ => bail!("latest block is neither number or string"),
+        };
+        Ok((chain_id, block_id))
     }
 }
 
@@ -158,7 +220,12 @@ mod tests {
     #[test]
     #[ignore]
     fn it_reads_logs() {
-        let rpc_addr = env::var("RPC_ETH_ADDR").unwrap();
+        let rpc_addr = env::var("RPC_ETH_ADDR").expect("RPC_ETH_ADDR must be set");
+        let client = EthBatchClient::new(&rpc_addr);
+        let (chain_id, block_id) = client.connect().unwrap();
+        assert!(block_id > 17600000);
+        assert_eq!(chain_id, 1);
+
         let addresses =
             vec![Address::from_str("0b38210ea11411557c13457d4da7dc6ea731b88a").unwrap()];
         let topic =
@@ -175,7 +242,7 @@ mod tests {
             None,
         )];
         println!("{}", serde_json::to_string(&rq).unwrap());
-        let response = EthBatchClient::new(&rpc_addr).get(rq).unwrap();
+        let response = client.get(rq).unwrap();
         println!("{}", serde_json::to_string_pretty(&response).unwrap());
         response.value("l").unwrap();
     }
@@ -183,7 +250,12 @@ mod tests {
     #[test]
     #[ignore]
     fn it_reads_batch() {
-        let rpc_addr = env::var("RPC_ETH_ADDR").unwrap();
+        let rpc_addr = env::var("RPC_ETH_ADDR").expect("RPC_ETH_ADDR not set");
+        let client = EthBatchClient::new(&rpc_addr);
+        let (chain_id, block_id) = client.connect().unwrap();
+        assert_eq!(chain_id, 1);
+        assert!(block_id > 17600000);
+
         let block_id =
             H256::from_str("6773963483ac8af3c8e1e65e48a4c8eeb272f56b10534ae5356795415f817a74")
                 .unwrap();
@@ -196,7 +268,7 @@ mod tests {
             get_receipt(tx_id),
         ];
         println!("{}", serde_json::to_string(&rq).unwrap());
-        let response = EthBatchClient::new(&rpc_addr).get(rq).unwrap();
+        let response = client.get(rq).unwrap();
         println!("{:?}", response);
         response.value(&format!("b{:?}", block_id)).unwrap();
         response.value(&format!("x{:?}", tx_id)).unwrap();
