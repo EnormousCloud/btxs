@@ -3,10 +3,13 @@ mod param;
 
 use crate::error::{Error, ErrorContainer};
 use anyhow::{bail, Context};
-use ethers::types::{Address, BlockNumber, Filter, Log, Topic, H256};
+use ethers::types::{
+    Address, Block, BlockNumber, Filter, Log, Topic, Transaction, TransactionReceipt, TxHash, H256,
+};
 use param::Params;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap as Map;
 use std::time::Duration;
 use tracing::*;
 
@@ -40,13 +43,13 @@ pub fn get_net_version() -> RpcSingleRequest {
 }
 
 /// request to retrieve block by hash
-pub fn get_block(hash: H256) -> RpcSingleRequest {
+pub fn get_block(hash: H256, transactions: bool) -> RpcSingleRequest {
     let tx = serde_json::Value::String(format!("{:?}", &hash));
     RpcSingleRequest {
         jsonrpc: "2.0".to_string(),
         id: format!("b{:?}", hash),
         method: "eth_getBlockByHash".to_string(),
-        params: Params::Array(vec![tx, true.into()]),
+        params: Params::Array(vec![tx, transactions.into()]),
     }
 }
 
@@ -210,12 +213,17 @@ impl EthBatchClient {
     }
 }
 
+pub struct BlockTransactions {
+    pub block: Block<TxHash>,
+    pub transactions: Vec<Transaction>,
+    pub receipts: Map<TxHash, TransactionReceipt>,
+}
+
 pub struct EthLogsStream {
     client: EthBatchClient,
     latest_event_block: u64,
     latest_block: u64,
     batch_size: u64,
-    min_block: u64,
     addresses: Vec<Address>,
     topic0: Option<Topic>,
     topic1: Option<Topic>,
@@ -236,11 +244,12 @@ impl EthLogsStream {
         topic3: Option<Topic>,
     ) -> anyhow::Result<Self> {
         let (_, latest_block) = client.connect()?;
+        // TODO: pick up the latest events from the KV storage
+        let latest_event_block = min_block - 1;
         Ok(Self {
             client,
-            latest_event_block: min_block - 1,
+            latest_event_block,
             latest_block,
-            min_block,
             batch_size,
             addresses,
             topic0,
@@ -250,7 +259,7 @@ impl EthLogsStream {
         })
     }
 
-    pub fn next(&self) -> anyhow::Result<Option<bool>> {
+    pub fn next(&self) -> anyhow::Result<Option<BlockTransactions>> {
         let mut current_block = self.latest_event_block;
         while current_block < self.latest_block {
             let to_block = std::cmp::min(current_block + self.batch_size, self.latest_block);
@@ -267,9 +276,34 @@ impl EthLogsStream {
             println!("request: {:?}", requests);
             let response = self.client.get(requests)?;
             let logs: Vec<Log> = serde_json::from_value(response.value("logs")?)?;
-            // build block batches from logs
+
+            let mut bm = Map::<H256, Block<TxHash>>::new();
+            for l in logs {
+                let blockHash = l.block_hash.context("no block hash")?;
+                // download block by its hash, it its not there already
+                if !bm.contains_key(&blockHash) {
+                    let requests = vec![get_block(blockHash, false)];
+                    let response = self.client.get(requests)?;
+                    let block: Block<TxHash> = serde_json::from_value(response.value("block")?)?;
+                    bm.insert(blockHash, block);
+                }
+            }
             // 2nds request:: get transactions and receipts, block by block
-            current_block = to_block;
+            let mut txs = Vec::<Transaction>::new();
+            let mut receipts = Map::<TxHash, TransactionReceipt>::new();
+            for (_, block) in bm.iter() {
+                for tx in block.transactions.iter() {
+                    let hash = &tx.clone();
+                    let requests = vec![get_transaction(hash), get_receipt(hash)];
+                    let response = self.client.get(requests)?;
+                    let tx: Transaction = serde_json::from_value(response.value("transaction")?)?;
+                    let receipt: TransactionReceipt =
+                        serde_json::from_value(response.value("receipt")?)?;
+                    txs.push(tx);
+                    receipts.insert(tx.hash, receipt);
+                }
+                current_block = block.number.as_u64();
+            }
         }
         Ok(None)
     }
@@ -328,7 +362,7 @@ mod tests {
             H256::from_str("2d8a0041b55fb5d76e69b195fbbec1022133a8f09af7168a8617b270b6ef3bec")
                 .unwrap();
         let rq = vec![
-            get_block(block_id),
+            get_block(block_id, false),
             get_transaction(tx_id),
             get_receipt(tx_id),
         ];
